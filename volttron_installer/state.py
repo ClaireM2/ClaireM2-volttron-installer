@@ -1,55 +1,51 @@
 import reflex as rx
-from pathlib import Path
 from .settings import get_settings
-from . import backend as bk
-import reflex as rx
 from .model_views import AgentModelView, ConfigStoreEntryModelView
 from .utils.create_component_uid import generate_unique_uid
-# from platform_page import State as PlatformPageState
-# from platform_page import Instance
-from .models import Instance
+from .models import *
 from .utils.conversion_methods import json_string_to_csv_string, csv_string_to_json_string, identify_string_format, csv_string_to_usable_dict
 from .utils.validate_content import check_json, check_csv, check_path, check_yaml, check_regular_expression
 from .utils.create_csv_string import create_csv_string, create_and_validate_csv_string
-import io, re, json, csv, yaml
 from .navigation.state import NavigationState
-from .backend.models import AgentType, HostEntry, PlatformConfig, PlatformDefinition, ConfigStoreEntry, AgentDefinition
-from .backend.endpoints import get_all_platforms, create_platform, \
-    CreatePlatformRequest, CreateOrUpdateHostEntryRequest, add_host, \
-    get_agent_catalog, get_hosts, update_platform, get_inventory_service, \
-    get_platform_service, get_platform_status, deploy_platform, \
-    get_ansible_service
+from .backend.models import AgentType, HostEntry, PlatformConfig, PlatformDefinition, ConfigStoreEntry, AgentDefinition, CreatePlatformRequest, CreateOrUpdateHostEntryRequest
 from .utils.create_component_uid import generate_unique_uid
 from .utils.conversion_methods import csv_string_to_usable_dict
 from .utils.validate_content import check_json
 from .utils.prettify import prettify_json
+from .utils import delete_file
 from loguru import logger
 from .model_views import HostEntryModelView, PlatformModelView, AgentModelView, ConfigStoreEntryModelView, PlatformConfigModelView
+from .thin_endpoint_wrappers import ( 
+    get_agent_catalog, 
+    get_hosts, 
+    get_all_platforms, 
+    ping_resolvable_host, 
+    add_host, 
+    update_platform, 
+    create_platform, 
+    deploy_platform
+)
 from .thin_endpoint_wrappers import *
-# from ...rxconfig import config
-import string, random, json, csv, yaml, re
+import string, random, json, csv, yaml, re, io
 from copy import deepcopy
-
-
-
-
+from typing import Literal
 
 class AppState(rx.State):
     """The app state."""
-    # platforms
-    # hosts
-    # agents
-    # templates
-    # ==============
-    # perhaps all of the fields above are filled out by the respective
-    # backend methods, like list_of_x(). this will still be compatible
-    # with our tab_states.py because we each of those states will 
-    # inherit from this state. My thought process here is that I will
-    # have to create tab_contents for each of x fields, then those will
-    # be the forward facing models that will be used in the frontend. 
+    _sidebar_page_selected: str = "overview"
+    tool_accordion_value: str ="tools"
 
-    ...
+    # Events
+    @rx.var
+    def sidebar_selected_page(self) -> str:
+        self._sidebar_page_selected = self.router.page.raw_path if self.router.page.raw_path != "/" else "overview"
+        logger.debug(self._sidebar_page_selected)
+        return self._sidebar_page_selected
 
+    @rx.event
+    def toggle_tool_dropdown(self, value: str):
+        """Toggle the tool dropdown."""
+        self.tool_accordion_value = value
 
 settings = get_settings()
 
@@ -63,11 +59,6 @@ class SettingsState(rx.State):
     _data_dir: str = settings.data_dir
 
 async def __agents_off_catalog__() -> list[AgentModelView]:
-    # response = await get_request(f"{API_BASE_URL}{CATALOG_PREFIX}/agents")
-    # data = response.json()
-    # logger.debug(f"this is the data: {data}")
-    # # Construct the catalog from the data.
-    # catalog: Dict[str, AgentType] = {item["identity"]: AgentType(**item) for item in data}
     catalog: dict[str, AgentType] = await get_agent_catalog()
     agent_list: list[AgentModelView] = []
 
@@ -110,12 +101,7 @@ async def __agents_off_catalog__() -> list[AgentModelView]:
     return agent_list
 
 async def __instances_from_api__() -> dict[str, Instance]:
-    # logger.debug(f"backend url: {rx.config}")
-    # platforms: list[PlatformDefinition] = await get_all_platforms()
-    # Trying to test out the wrapper
-    response = await get_request("http://localhost:8000/api/platforms/")
-    data = response.json()
-    platforms: list[PlatformDefinition] = [PlatformDefinition(**item) for item in data]
+    platforms: list[PlatformDefinition] = await get_all_platforms()
     hosts: list[HostEntry] = await get_hosts()
     host_by_id: dict[str, HostEntry] = {}
     for h in hosts:
@@ -142,9 +128,6 @@ async def __instances_from_api__() -> dict[str, Instance]:
             volttron_home=working_host_entry.volttron_home,
         )
 
-        # platform_status = await get_platform_status(
-        #     get_request("http://localhost:8000/api/platforms/status", p.config.instance_name)
-        #     )
         instance = {
             p.config.instance_name: Instance(
                 host=host,
@@ -199,7 +182,6 @@ async def __instances_from_api__() -> dict[str, Instance]:
                 if config.data_type == "CSV":
                     usable_csv = csv_string_to_usable_dict(config.value)
                     config.csv_variants["Custom"] = usable_csv
-                    # logger.debug(f"Loaded usable CSV for config {config.path} inside agent {agent.identity}: {usable_csv}")
             # After going through the agent's config store and assigning the safe entries,
             # we can now assign the agent's safe_agent
             agent.safe_agent = agent.to_dict()
@@ -259,6 +241,15 @@ class PlatformPageState(rx.State):
             return working_platform.platform.safe_platform['config']['instance_name']
 
     # === vars for platform details ===
+    @rx.var
+    def password_field(self) -> str:
+        if self.current_uid == "":
+            return ""
+        working_platform: Instance | None = self.platforms.get(self.current_uid, None)
+        if working_platform is None:
+            return ""
+        return working_platform.password
+
     @rx.var
     def platform_deployed(self) -> bool:
         if self.current_uid == "":
@@ -386,7 +377,12 @@ class PlatformPageState(rx.State):
     
     @rx.var
     def instance_deployable(self) -> bool:
-        return True
+        if self.current_uid == "":
+            return False
+        working_platform: Instance | None = self.platforms.get(self.current_uid, None)
+        if working_platform is None:
+            return False
+        return self.check_instance_deployable(working_platform)
     # === end of instance validation bars ===
 
     # Events
@@ -528,6 +524,22 @@ class PlatformPageState(rx.State):
         yield NavigationState.route_to_platform(new_uid)
 
     @rx.event
+    def copy_platform(self, instance_name: str):
+        uid = self.generate_unique_uid()
+        copy_instance = deepcopy(self.platforms[instance_name])
+        copy_instance.platform.config.instance_name = uid
+        copy_instance.refresh_for_copy()
+        self.platforms[uid] = copy_instance
+        yield NavigationState.route_to_platform(self.platforms[uid].platform.config.instance_name)
+        yield rx.toast.info(f"Platform: {instance_name} has been copied")
+        # This is a weird way of doing it but we are doing this because 
+        # the UI routes to the instance name of a platform. and when we change
+        # the instance name after we route to the uid it solves some headaches,
+        # but probably should fix the headaches that it would cause.
+        copy_instance.platform.config.instance_name = instance_name
+        # yield self.update_platform_config_detail("instance_name", instance_name)
+        
+    @rx.event
     def toggle_advanced(self):
         working_platform: Instance = self.platforms[self.current_uid]
         working_platform.advanced_expanded = not working_platform.advanced_expanded
@@ -541,6 +553,16 @@ class PlatformPageState(rx.State):
     def toggle_web(self):
         working_platform: Instance = self.platforms[self.current_uid]
         working_platform.web_checked = not working_platform.web_checked
+
+    @rx.event
+    def toggle_federation(self):
+        working_platform: Instance = self.platforms[self.current_uid]
+        working_platform.federation_checked = not working_platform.federation_checked
+
+    @rx.event
+    def update_password_field(self, value: str):
+        working_platform_instance = self.platforms[self.current_uid]
+        working_platform_instance.password = value
 
     @rx.event
     def update_detail(self, field: str, value):
@@ -562,21 +584,14 @@ class PlatformPageState(rx.State):
     @rx.event
     async def handle_deploy(self):
         working_platform: Instance = self.platforms[self.current_uid]
-
-        if working_platform.uncaught != False and working_platform.valid:
-            working_platform.safe_host_entry = working_platform.host.to_dict()
-            working_platform.uncaught = False
-
-            depends = await get_ansible_service()
-            deploy_platform(
-                PlatformConfig(
-                    instance_name=working_platform.platform.config.instance_name,
-                    vip_address=working_platform.platform.config.vip_address
-                ),
-                ansible=depends
-            )
+        try:
+            response = await deploy_platform(working_platform.platform.config.instance_name, working_platform.password)
+            logger.debug(f"response: {response.json()}")
             yield rx.toast.success("Deployed Successfully!")
-     
+        except Exception as e:
+            logger.debug(f"there was an error deploying platform {working_platform.platform.config.instance_name}. e: {e}")
+            yield rx.toast.error(f"There was an error deploying platform: {working_platform.platform.config.instance_name}")
+
     @rx.event
     async def handle_save(self):
         working_platform: Instance = self.platforms[self.current_uid]
@@ -587,8 +602,10 @@ class PlatformPageState(rx.State):
 
         working_platform.safe_host_entry = working_platform.host.to_dict()
         working_platform.uncaught = False
-        # logger.debug(f"getting the host id: {working_platform.safe_host_entry['id']}")
         
+        # TODO save the federation field once we have it all up and running
+        # federation = working_platform.enable_federation
+
         # Create base platform
         base_platform_request = CreatePlatformRequest(
             host_id = working_platform.safe_host_entry["id"],
@@ -601,6 +618,7 @@ class PlatformPageState(rx.State):
                     identity=identity,
                     source=agent["source"],
                     config=agent["config"],
+                    config_store_allowed=agent["config_store_allowed"],
                     config_store={
                         path: ConfigStoreEntry(
                             path=path,
@@ -613,9 +631,6 @@ class PlatformPageState(rx.State):
         )
 
         logger.debug(f"this is the uid copy: {uid_copy}")
-        # # Logging
-        # logger.debug(f"Final base platform_request: {base_platform_request}")
-        # logger.debug(f"this is my base platform_request: {base_platform_request}")
         if working_platform.platform.config.instance_name in [p.config.instance_name for p in all_platforms]:
             logger.debug("yes we have committed this already")
             await update_platform(
@@ -629,16 +644,9 @@ class PlatformPageState(rx.State):
         host_request["ansible_port"] = int(host_request["ansible_port"])
         host_request["name"] =  working_platform.platform.config.instance_name
         request = CreateOrUpdateHostEntryRequest(**host_request)
-        # logger.debug(f"this is the request: {request}")
-        logger.debug(f"this is the uid copy: {uid_copy}")
+
         await add_host(request)
-        inv_serv = await get_inventory_service()
-        plat_serv = await get_platform_service()
-        await create_platform(
-            platform=base_platform_request,
-            inventory_service=inv_serv,
-            platform_service=plat_serv
-            )
+        await create_platform(base_platform_request)
         
         # Lets say changes saved successfully and redirect to the new url while deleting our old one
         logger.debug(f"this is the uid copy: {uid_copy}")
@@ -686,44 +694,17 @@ class PlatformPageState(rx.State):
         host_id = working_platform.host.id
         if host_id =="":
             return False
-
-        try:
-            url = f"http://localhost:8000/api/task/ping/{host_id}"
-            
-            response = await get_request(url, {"host_id": host_id})
-            data = response.json()
-            
-            logger.debug(f"Host reachability response for {host_id}: {data}")
-            
-            # Check if 'reachable' key exists, in case of api errors
-            if "reachable" not in data:
-                logger.error(f"Missing 'reachable' key in API response. Got keys: {list(data.keys())}")
-                logger.error(f"Full response: {data}")
-                
-                # Just to let us know if we got something unexpected
-                if "status" in data:
-                    logger.info(f"Found 'status' key instead: {data['status']}")
-                    # Maybe the API returns {"status": true/false} instead?
-                    return data["status"]
-                    
-                return False
-                
-            return data["reachable"]
-        except Exception as e:
-            logger.error(f"Error checking host reachability: {str(e)}")
-            return False
+        response = await ping_resolvable_host(host_id)
+        return response.reachable
         
     def check_instance_uncaught(self, working_platform: Instance) -> bool:
         uncaught: bool = False
         # check if host details are changed
-        # logger.debug(f"I am checking host now..")
         if working_platform.host.to_dict() != working_platform.safe_host_entry:
-            # logger.debug(f"Host is uncaught")
             uncaught = True
 
         # check if platform details are changed but skip the agents field as we will handle that separately
         if {k: v for k, v in working_platform.platform.to_dict().items() if k != 'agents'} != {k: v for k, v in working_platform.platform.safe_platform.items() if k != 'agents'}:
-            # logger.debug(f"Platform is uncaught")
             uncaught = True
 
         # check if we added some new uncaught agents
@@ -734,10 +715,6 @@ class PlatformPageState(rx.State):
                 # we can break out of this because we just needed to find at least one brand new uncaught agent
                 # to render the platform as uncaught
                 break
-
-        # if working_platform.platform.to_dict() != working_platform.platform.safe_platform:
-        #     # logger.debug(f"Platform is uncaught")
-        #     uncaught = True
         
         return uncaught
 
@@ -772,6 +749,9 @@ class PlatformPageState(rx.State):
             savable = False
 
         return savable
+
+    def check_instance_deployable(self, working_platform: Instance) -> bool:
+        return True if self.check_instance_uncaught(working_platform) == False and working_platform.new_instance == False else False
 
     def connection_validity(self, working_platform: Instance) -> tuple[bool, dict[str, bool]]:
         valid = True
@@ -823,7 +803,6 @@ class PlatformPageState(rx.State):
         
         new_name = working_platform.platform.config.instance_name
         existing_names=[p.platform.safe_platform["config"]["instance_name"] for p in self.in_file_platforms if p.new_instance == False and self.current_uid != p.platform.safe_platform["config"]["instance_name"]]
-        # logger.debug(f"Checking if '{new_name}' exists in: {existing_names}")
 
         # Check to see if our instance is taken already:
         # Seeing if our instance name is inside a list of already registered instance names...
@@ -839,15 +818,11 @@ class PlatformPageState(rx.State):
 
         return (valid, validity_map)
 
-
-
-
 class AgentConfigState(rx.State):
     working_agent: AgentModelView = AgentModelView()
     selected_component_id: str = ""
     draft_visible: bool = False
     
-
     # Vars
     # this being named agent details doesn't make sense to be honest
     @rx.var
@@ -856,6 +831,10 @@ class AgentConfigState(rx.State):
         uid = args.get("uid", "")
         agent_uid = args.get("agent_uid", "")
         return {"uid": uid, "agent_uid": agent_uid}
+
+    @rx.var
+    def selected_tab(self) -> str:
+        return self.working_agent.selected_agent_config_tab
 
     # ========= state vars to streamline working checking the validity of working config =======
     
@@ -926,8 +905,28 @@ class AgentConfigState(rx.State):
     @rx.var
     def changed_configs_list(self) -> list[str]:
         """returns a list of component ids for the config store entries that have been changed"""
-        return list(config.component_id for config in self.working_agent.config_store if config.dict() != config.safe_entry)
+        return list(config.component_id for config in self.working_agent.config_store if config.dict() != config.safe_entry or config.safe_entry["path"] == "")
+    
+    @rx.var
+    def committed_configs(self) -> list[ConfigStoreEntryModelView]:
+        return [
+            ConfigStoreEntryModelView(
+                    path=config.safe_entry["path"], 
+                    data_type=config.safe_entry["data_type"],
+                    value=config.safe_entry["value"],
+                    csv_variants=config.csv_variants,
+                    component_id=config.component_id,
+                    selected_variant=config.selected_variant,
+                ) for config in self.working_agent.config_store if not config.uncommitted]
+    
+    @rx.var
+    def has_valid_configs(self) -> bool:
+        return (len(self.working_agent.config_store) > 0 and 
+                any(not config.uncommitted for config in self.working_agent.config_store))
 
+    @rx.var
+    def num_of_new_invalid_configs(self) -> int:
+        return len([config.path for config in self.working_agent.config_store if config.uncommitted]) 
     # ======== End of config validation vars =========
 
 
@@ -963,22 +962,8 @@ class AgentConfigState(rx.State):
         return validity_map["config"]
 
     # ======== End of agent validation vars========
-    
-    @rx.var
-    def committed_configs(self) -> list[ConfigStoreEntryModelView]:
-        return [
-            ConfigStoreEntryModelView(
-                    path=config.safe_entry["path"], 
-                    data_type=config.safe_entry["data_type"],
-                    value=config.safe_entry["value"],
-                    csv_variants=config.csv_variants,
-                ) for config in self.working_agent.config_store if not config.uncommitted]
-    
-    @rx.var
-    def has_valid_configs(self) -> bool:
-        return (len(self.working_agent.config_store) > 0 and 
-                any(not config.uncommitted for config in self.working_agent.config_store))
 
+    # Events
     @rx.event
     async def hydrate_working_agent(self):
         """Initialize working agent from platform state"""
@@ -991,7 +976,10 @@ class AgentConfigState(rx.State):
                 self.working_agent = agent
                 break
 
-    # Events
+    @rx.event
+    def change_agent_config_tab(self, value):
+        self.working_agent.selected_agent_config_tab = value
+
     @rx.event
     def flip_draft_visibility(self):
         self.draft_visible = not self.draft_visible
@@ -1041,19 +1029,23 @@ class AgentConfigState(rx.State):
                 logger.debug(f"this is the validity map: {valid_map}")
                 config.valid = valid
                 config.changed = config.dict() != config.safe_entry
-                # this shows the "changed" field as we update the config entry
-                # logger.debug(f"this is the changed value: {config.changed}")
-                # logger.debug(f"manually checking dict: {config.dict()}")
-                # logger.debug(f"manually checking safe_entry: {config.safe_entry}")
                 if id is not None:
                     yield rx.set_value(id, value)
+                break
     
+    @rx.event
+    def handle_unsaved_config_banner_click(self, component_id: str):
+        """Handle click on unsaved config banner to set the selected component id"""
+        self.working_agent.selected_config_component_id = component_id
+        yield AgentConfigState.flip_draft_visibility
+        yield AgentConfigState.change_agent_config_tab("2")
+
     @rx.event
     async def handle_config_store_entry_upload(self, files: list[rx.UploadFile]):
         # dealing with file uploads
         current_file = files[0]
         upload_data = await current_file.read()
-        outfile = (rx.get_upload_dir() / current_file.filename)
+        outfile = (rx.get_upload_dir() / current_file.name)
         
         with outfile.open("wb") as file_object:
             file_object.write(upload_data)
@@ -1061,13 +1053,13 @@ class AgentConfigState(rx.State):
         result: str = ""
         file_type: str = ""
 
-        if current_file.filename.endswith('.json'):
+        if current_file.name.endswith('.json'):
             with open(outfile, 'r') as file_object:
                 data = json.load(file_object)
                 file_type = "JSON"
                 result = json.dumps(data, indent=4)
 
-        elif current_file.filename.endswith('.csv'):
+        elif current_file.name.endswith('.csv'):
             with open(outfile, 'r') as file_object:
                 reader = csv.reader(file_object)
                 output = io.StringIO()
@@ -1104,23 +1096,24 @@ class AgentConfigState(rx.State):
         logger.debug("agent config store entry was uploaded")
         yield AgentConfigState.set_component_id(new_config_entry.component_id)
         yield rx.toast.success("Config store entry uploaded successfully")
+        delete_file.delete_file(current_file.name)
 
     @rx.event
     async def handle_agent_config_upload(self, files: list[rx.UploadFile]):
         file = files[0]
         upload_data = await file.read()
-        outfile = (rx.get_upload_dir() / file.filename)
+        outfile = (rx.get_upload_dir() / file.name)
         
         with outfile.open("wb") as file_object:
             file_object.write(upload_data)
 
         result: str = ""
 
-        if file.filename.endswith('.json'):
+        if file.name.endswith('.json'):
             with open(outfile, 'r') as file_object:
                 data = json.load(file_object)
                 result = json.dumps(data, indent=4)
-        elif file.filename.endswith('.yaml') or file.filename.endswith('.yml'):
+        elif file.name.endswith('.yaml') or file.name.endswith('.yml'):
             with open(outfile, 'r') as file_object:
                 data = yaml.safe_load(file_object)
                 result = yaml.dump(data, sort_keys=False, default_flow_style=False)
@@ -1131,6 +1124,7 @@ class AgentConfigState(rx.State):
         agent = self.working_agent
         agent.config = result
         yield rx.set_value("agent_config_field", result)
+        delete_file.delete_file(file.name)
     
     @rx.event
     def create_blank_config_entry(self):
@@ -1395,3 +1389,390 @@ class AgentConfigState(rx.State):
             config_fields["csv"] = False
 
         return (valid, config_fields)
+
+class IndexPageState(rx.State):
+    """State for the Index page"""
+    selected_tool: str = ""
+    scanning_bacnet_range: bool = False
+    is_starting_proxy: bool = False
+    proxy_up: bool = False
+
+    # Events 
+    @rx.event
+    def toggle_proxy(self):
+        """Toggle the proxy state"""
+        if self.proxy_up:
+            self.proxy_up = False
+            yield rx.toast.success("Proxy stopped successfully.")
+        else:
+            yield IndexPageState.start_proxy()
+
+    @rx.event
+    async def start_proxy(self):
+        """Handle the start proxy button click"""
+        if self.is_starting_proxy:
+            yield rx.toast.info("Proxy is already starting.")
+            return
+        self.is_starting_proxy = True
+        yield rx.toast.success("Starting proxy...")
+        # TODO implement proxy start logic
+        import asyncio
+        await asyncio.sleep(2)
+        self.proxy_up = True
+        self.is_starting_proxy = False
+        yield rx.toast.success("Proxy started successfully.")
+
+    @rx.event
+    async def stop_proxy(self):
+        pass
+
+    @rx.event
+    def set_selected_tool(self, tool: str):
+        """Change the selected tool"""
+        if self.selected_tool == tool:
+            self.selected_tool = ""
+        else:
+            self.selected_tool = tool
+        logger.debug(f"Selected tool changed to: {self.selected_tool}")
+
+
+
+class BacnetScanState(rx.State):
+    selected_property_tab: Literal["read", "write"] = "read"  # Default to "read" tab
+    discovered_devices: list[dict[str, str]] = []  # Store discovered devices
+    selected_device: dict[str, str] | None = None  # Store the currently selected device
+    ip_detection_mode: Literal["", "local_ip", "windows_host_ip"] = ""  # "local_ip", "windows_host_ip" or ""
+
+    scanning_bacnet_range: bool = False
+    is_starting_proxy: bool = False
+    proxy_up: bool = False
+    _open_accordion_items: list[str] = []
+    pinging_ip: bool = False
+    _is_write_property_valid: bool = False
+    _is_read_property_valid: bool = False
+    
+    # Fields
+    proxy_field_value: str = ""
+
+    # Models
+    request_who_is: RequestWhoIsModel = RequestWhoIsModel()
+    read_device_all: ReadDeviceAllModel = ReadDeviceAllModel()
+    scan_ip_range: ScanIPRangeModel = ScanIPRangeModel()
+    ping_ip: PingIPModel = PingIPModel()
+    read_property: ReadPropertyModel = ReadPropertyModel()
+    write_property: WritePropertyModel = WritePropertyModel()
+
+    # UI driven models
+    local_ip_info: LocalIPModel = LocalIPModel()
+    windows_host_ip_info: WindowsHostIPModel = WindowsHostIPModel()
+
+    # Computed Vars
+    @rx.var
+    def open_accordion_items(self) -> list[str]:
+        """Get the currently open accordion items"""
+        if self.proxy_up:
+            return self._open_accordion_items
+        self._open_accordion_items = []
+        return self._open_accordion_items
+    
+    @rx.var
+    def has_devices(self) -> bool:
+        """Check if any devices have been discovered."""
+        return len(self.discovered_devices) > 0
+    
+    @rx.var
+    def is_read_property_valid(self) -> bool:
+        for field, value in self.read_property.model_dump().items():
+            if field == "property_array_index":
+                break
+            if value == "":
+                self._is_read_property_valid = False
+                return self._is_read_property_valid
+        self._is_read_property_valid = True
+        return self._is_read_property_valid
+
+    @rx.var
+    def is_write_property_valid(self) -> bool:
+        for field, value in self.write_property.model_dump().items():
+            if field == "property_array_index":
+                break
+            if value == "":
+                self._is_write_property_valid = False
+                return self._is_write_property_valid
+        self._is_write_property_valid = True
+        return self._is_write_property_valid
+
+    # Events
+    @rx.event
+    def handle_proxy_field_edit(self, value: str):
+        self.proxy_field_value = value 
+
+
+    @rx.event
+    def set_selected_property_tab(self, tab: str):
+        """Update the selected property tab."""
+        self.selected_property_tab = tab
+    
+    @rx.event
+    def handle_device_row_click(self, device_index: int):
+        """Handle when a device row is clicked."""
+        if 0 <= device_index < len(self.discovered_devices):
+            selected_device = self.discovered_devices[device_index]
+            self.selected_device = selected_device
+            
+            # Auto-fill the property operation fields with selected device info
+            device_address = selected_device.get("address", "")
+            device_id = selected_device.get("id", "")
+            
+            # Update read property form
+            self.read_property.device_address = device_address
+            self.read_property.object_identifier = f"{device_id}"
+            
+            # Update write property form
+            self.write_property.device_address = device_address
+            self.write_property.object_identifier = f"{device_id}"
+            
+            yield rx.toast.info(f"Selected device: {selected_device.get('name', '')}")
+    
+    @rx.event
+    def set_ip_detection_mode(self, mode: Literal["windows_host_ip", "local_ip"]):
+        """Switch between local IP and Windows host IP mode."""
+        self.ip_detection_mode = mode
+        yield BacnetScanState.get_network_info()
+
+    @rx.event
+    async def get_network_info(self):
+        """Get network information based on current detection mode."""
+        self.pinging_ip = True
+        yield rx.toast.info(f"Retrieving network information...")
+        
+        # TODO: Implement actual network info retrieval logic
+        import asyncio
+        await asyncio.sleep(2)
+        
+        if self.ip_detection_mode == "local_ip":
+            # Example response - replace with actual implementation
+            self.local_ip_info = LocalIPModel(
+                local_ip="172.18.229.191",
+                subnet_mask= "255.255.240.0",
+                cidr= "172.18.229.191/20"
+            )
+            # Auto-fill the network range input
+            self.scan_ip_range.network_string = self.local_ip_info.cidr
+            yield rx.toast.success("Retrieved Local Host IP")
+        else:
+            # Example response for Windows host IP
+            self.windows_host_ip_info = WindowsHostIPModel(
+                windows_host_ip = "130.20.125.77"
+            )
+            
+            self.scan_ip_range.network_string = self.windows_host_ip_info.windows_host_ip
+            yield rx.toast.success("Retrieved Windows Host IP")
+        self.pinging_ip = False
+        yield
+
+    @rx.event
+    def set_open_items(self, value):
+        self._open_accordion_items = value
+
+    @rx.event
+    def toggle_proxy(self):
+        """Toggle the proxy state"""
+        if self.proxy_up:
+            self.proxy_up = False
+            yield rx.toast.success("Proxy stopped successfully.")
+        else:
+            yield rx.toast.info("Starting proxy...")
+            yield BacnetScanState.start_proxy()
+
+    @rx.event
+    async def start_proxy(self):
+        """Handle the start proxy button click"""
+        if self.is_starting_proxy:
+            yield rx.toast.info("Proxy is already starting.")
+            return
+        self.is_starting_proxy = True
+        yield
+        # TODO implement proxy start logic
+        import asyncio
+        await asyncio.sleep(2)
+        self.proxy_up = True
+        self.is_starting_proxy = False
+        yield rx.toast.success("Proxy started successfully.")
+
+    @rx.event
+    async def stop_proxy(self):
+        pass
+    
+    @rx.event
+    async def handle_bacnet_scan(self):
+        """Handle the BACnet scan button click"""
+        if self.scanning_bacnet_range:
+            yield rx.toast.info("BACnet scan is already in progress.")
+            return
+        self.scanning_bacnet_range = True
+        yield
+        # TODO implement scan logic
+        import asyncio
+        await asyncio.sleep(2)
+        self.scanning_bacnet_range = False
+        self.discovered_devices=[
+            {"name": "Device Alpha", "id": "1234", "address": "192.168.1.10"},
+            {"name": "Device Beta", "id": "5678", "address": "192.168.1.12"},
+            {"name": "Device Gamma", "id": "9012", "address": "192.168.1.14"},
+        ]
+        yield
+
+    # Handle inputs into model
+    @rx.event
+    def request_who_is_input(self, field: str, value: str):
+        """Handle input changes for the Request Who Is form."""
+        if field == "device_instance_low":
+            self.request_who_is.device_instance_low = value
+        elif field == "device_instance_high":
+            self.request_who_is.device_instance_high = value
+        elif field == "dest":
+            self.request_who_is.dest = value
+
+    @rx.event
+    def read_device_all_input(self, field: str, value: str):
+        """Handle input changes for the Read Device All form."""
+        if field == "device_address":
+            self.read_device_all.device_address = value
+        elif field == "device_object_identifier":
+            self.read_device_all.device_object_identifier = value
+
+    @rx.event
+    def scan_ip_range_input(self, value: str):
+        """Handle input changes for the Scan IP Range form."""
+        self.scan_ip_range.network_string = value
+
+    @rx.event
+    def ping_ip_input(self, value: str):
+        """Handle input changes for the Ping IP form."""
+        self.ping_ip.ip_address = value
+
+    @rx.event
+    def read_property_input(self, field: str, value: str):
+        """Handle input changes for the Read Property form."""
+        if field == "device_address":
+            self.read_property.device_address = value
+        elif field == "object_identifier":
+            self.read_property.object_identifier = value
+        elif field == "property_identifier":
+            self.read_property.property_identifier = value
+        elif field == "property_array_index":
+            # Handle empty string as None for optional field
+            self.read_property.property_array_index = value if value.strip() else None
+
+    @rx.event
+    def write_property_input(self, field: str, value: str):
+        """Handle input changes for the Write Property form."""
+        if field == "device_address":
+            self.write_property.device_address = value
+        elif field == "object_identifier":
+            self.write_property.object_identifier = value
+        elif field == "property_identifier":
+            self.write_property.property_identifier = value
+        elif field == "value":
+            self.write_property.value = value
+        elif field == "priority":
+            self.write_property.priority = value
+        elif field == "property_array_index":
+            # Handle empty string as None for optional field
+            self.write_property.property_array_index = value if value.strip() else None
+
+    @rx.event
+    def ip_address_input(self, value: str):
+        """Handle input change for the main IP address field."""
+        self.ip_address = value
+
+
+    # Handle the actual endpoint actions/functionality
+    @rx.event
+    async def handle_request_who_is(self):
+        """Handle the Request Who Is form submission."""
+        if not self.proxy_up:
+            yield rx.toast.error("Proxy must be started first.")
+            return
+            
+        # Access form data using self.request_who_is.device_instance_low, etc.
+        yield rx.toast.info(f"Sending Who-Is request from {self.request_who_is.device_instance_low} to {self.request_who_is.device_instance_high}")
+        
+        # TODO: Implement actual BACnet logic here
+        import asyncio
+        await asyncio.sleep(1)
+        
+        # Example response handling
+        yield rx.toast.success("Who-Is request completed.")
+    
+    @rx.event
+    async def handle_read_device_all(self):
+        """Handle the Read Device All form submission."""
+        if not self.proxy_up:
+            yield rx.toast.error("Proxy must be started first.")
+            return
+            
+        yield rx.toast.info(f"Reading all properties from device {self.read_device_all.device_address}")
+        
+        # TODO: Implement actual BACnet logic here
+        import asyncio
+        await asyncio.sleep(1)
+        
+        yield rx.toast.success("Read Device All completed.")
+    
+    @rx.event
+    async def handle_scan_ip_range(self):
+        """Handle the Scan IP Range form submission."""
+        if not self.proxy_up:
+            yield rx.toast.error("Proxy must be started first.")
+            return
+            
+        yield rx.toast.info(f"Scanning network: {self.scan_ip_range.network_string}")
+        
+        # TODO: Implement actual scan logic here
+        import asyncio
+        await asyncio.sleep(2)
+        
+        yield rx.toast.success("IP Range scan completed.")
+    
+    @rx.event
+    async def handle_ping_ip(self):
+        """Handle the Ping IP form submission."""
+        yield rx.toast.info(f"Pinging IP: {self.ping_ip.ip_address}")
+        
+        # TODO: Implement actual ping logic here
+        import asyncio
+        await asyncio.sleep(0.5)
+        
+        yield rx.toast.success("Ping completed.")
+    
+    @rx.event
+    async def handle_read_property(self):
+        """Handle the Read Property form submission."""
+        if not self.proxy_up:
+            yield rx.toast.error("Proxy must be started first.")
+            return
+            
+        yield rx.toast.info(f"Reading property from {self.read_property.device_address}")
+        
+        # TODO: Implement actual BACnet logic here
+        import asyncio
+        await asyncio.sleep(1)
+        
+        yield rx.toast.success("Read Property completed.")
+    
+    @rx.event
+    async def handle_write_property(self):
+        """Handle the Write Property form submission."""
+        if not self.proxy_up:
+            yield rx.toast.error("Proxy must be started first.")
+            return
+            
+        yield rx.toast.info(f"Writing to property on {self.write_property.device_address}")
+        
+        # TODO: Implement actual BACnet write logic here
+        import asyncio
+        await asyncio.sleep(1)
+        
+        yield rx.toast.success("Write Property completed.")

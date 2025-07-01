@@ -94,8 +94,9 @@ class CSVDataState(AgentConfigState):
     def add_column(self, form_data: dict):
         """Add a new column."""
         column_name = form_data["column_name"]
+        prefill_data = form_data.get("prefill_cells", "")
         working_variant_copy = self.working_config.csv_variants[self.selected_variant]
-        working_variant_copy[column_name] = [""] * self.num_rows
+        working_variant_copy[column_name] = [prefill_data] * self.num_rows
         # Ensure that the selected variant change is pushed through into working_config_store
         self.working_config.csv_variants[self.selected_variant] = working_variant_copy
         
@@ -191,7 +192,7 @@ def craft_table_cell(content: str, header: str = None, index: int = None, row_id
     )
 
 @base_component_wrapper
-def csv_table(width=r"100%", height="100%", **props):
+def csv_table(height="100%", **props):
     return rx.table.root(
         rx.table.header(
             rx.table.row(
@@ -222,7 +223,6 @@ def csv_table(width=r"100%", height="100%", **props):
                 )
             )
         ),
-        width=width,
         height=height,
         **props
     )
@@ -249,6 +249,13 @@ def add_column_dialog(disabled: bool = False):
                         ),
                         required_entry=True
                     ),
+                    form_entry.form_entry(
+                        "Prefill Cells",
+                        rx.input(
+                            name="prefill_cells",
+                            disabled=disabled
+                        ),
+                    ),
                     rx.flex(
                         rx.dialog.close(
                             rx.button(
@@ -268,7 +275,7 @@ def add_column_dialog(disabled: bool = False):
                         justify="end"
                     ),
                     direction="column",
-                    spacing="6"
+                    spacing="4"
                 ),
                 on_submit=CSVDataState.add_column if not disabled else None,
                 reset_on_submit=False,
@@ -330,7 +337,7 @@ def remove_column_dialog(disabled: bool = False):
         )
     )
 
-def csv_data_field(disabled: bool = False, **props):
+def csv_data_field(disabled: bool = False, table_style={}, table_width="100%", **props):
     return rx.cond(
         CSVDataState.is_hydrated, 
         rx.flex(
@@ -344,24 +351,21 @@ def csv_data_field(disabled: bool = False, **props):
                 )
             ),
             rx.flex(
-                rx.el.div(
-                    csv_table(disabled=disabled, **props),
-                    class_name="config_template_config_container"
-                ),
+                csv_table(disabled=disabled, width=table_width, style=table_style),
                 rx.flex(
                     add_column_dialog(disabled=disabled),
                     rx.divider(),
                     remove_column_dialog(disabled=disabled),
                     direction="column",
-                    spacing="4"
+                    spacing="4",
                 ),
                 direction="row",
                 spacing="4",
-                width=r"calc(100% - 2rem)",
-                max_width="100%"
+                width="100%",
             ),
             spacing="6",
-            direction="column"
+            direction="column",
+            **props
         ),
         rx.spinner(height="100vh")
     )
