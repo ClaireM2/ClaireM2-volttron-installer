@@ -1,0 +1,16 @@
+all:
+  hosts:
+    volttron1:
+      ansible_connection: ssh
+      ansible_host: 172.18.65.126
+      ansible_port: 22
+      ansible_user: installer
+      anible_python_interpreter: "python3.10"
+      host_configs_dir: '~/.volttron_volttron1_configs'
+      # http_proxy: ''
+      # https_proxy: ''
+      id: 172.18.65.126
+      name: volttron1
+      volttron_home: ~/.volttron
+      volttron_venv: "~/volttron_volttron1.venv"
+      ansible_ssh_private_key_file: ~/.ssh/id_rsa
