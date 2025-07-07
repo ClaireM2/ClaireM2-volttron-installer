@@ -334,6 +334,28 @@ async def deploy_platform(platform_id: str, password:str,
                 status_code=500,
                 detail=f"Ansible deployment failed: {stderr or stdout}"
             )
+            
+        ret_2, stdout, stderr = await ansible.run_playbook(
+            "run_platforms",
+            hosts,
+            
+        )  
+        if ret_2 != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Ansible deployment failed: {stderr or stdout}"
+            )
+
+        ret_3, stdout, stderr = await ansible.run_playbook(
+            "configure_agents",
+            hosts,
+            
+        )
+        if ret_3 != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Ansible deployment failed: {stderr or stdout}"
+            )
         return {"status": "success", "output": stdout}
 
     except Exception as e:
