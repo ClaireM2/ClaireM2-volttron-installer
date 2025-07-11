@@ -34,6 +34,8 @@ class InventoryService:
     async def create_host(self, entry: HostEntry):
         """Add a host to the inventory"""
         with self._lock:
+            if entry.volttron_venv == "Null" or entry.volttron_venv == "":
+                del entry.volttron_venv
             self._internal_state['all']['hosts'][entry.name] = entry.model_dump()
             yaml.dump(self._internal_state, self.inventory_path.open('w'))
     

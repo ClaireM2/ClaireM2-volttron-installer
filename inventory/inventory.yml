@@ -11,4 +11,3 @@ all:
       id: 172.18.65.126
       name: volttron1
       volttron_home: ~/.volttron
-      volttron_venv: ''
