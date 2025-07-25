@@ -8,6 +8,7 @@ from volttron_installer.backend.services.ansible_service import AnsibleService, 
 from volttron_installer.backend.services.inventory_service import InventoryService, get_inventory_service
 from volttron_installer.backend.services.platform_service import PlatformService, get_platform_service
 from volttron_installer.backend.models import AgentCatalog
+from queue import Queue
 
 from volttron_installer.backend.tool_proxy_factory import ToolProxyFactory
 
@@ -320,33 +321,36 @@ async def deploy_platform(platform_id: str, password:str,
                           platform_service: PlatformService = Depends(get_platform_service)):
 
     """Deploys a platform using Ansible"""
+    q = Queue()
     try:
         platform_service = await get_platform_service()
         platform = await platform_service.get_platform(platform_id)
         if platform is None:
             raise HTTPException(status_code=404, detail="Platform not found")
         
-        ret, stdout, stderr = await ansible.run_playbook("host_config", platform.host_id, password)
+        ret = ansible.run_playbook("host_config", platform.host_id, password)
 
-        if ret != 0:
+        if not ret:
              raise HTTPException(
                 status_code=500,
-                detail=f"Ansible deployment failed: {stderr or stdout}"
+                detail=f"Ansible deployment failed: {ret}"
             )
+        q.put(ret)
         hosts=platform.host_id,
-        return_code, stdout, stderr = await ansible.run_playbook(
+        return_code = await ansible.run_playbook(
             "install_platform",
             hosts,
             password,
             extra_vars=platform.config.model_dump()
         )
 
-        if return_code != 0:
+        if not return_code:
             raise HTTPException(
                 status_code=500,
-                detail=f"Ansible deployment failed: {stderr or stdout}"
+                detail=f"Ansible deployment failed: {ret}"
             )
-        return {"status": "success", "output": stdout}
+        q.put(return_code)
+        return {q}
     
 
     except Exception as e:

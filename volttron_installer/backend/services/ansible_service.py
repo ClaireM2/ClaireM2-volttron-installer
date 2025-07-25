@@ -8,6 +8,7 @@ from .. services.platform_service import get_platform_service, PlatformService
 import json
 import os
 from os.path import exists
+import multiprocessing
 
 from dotenv import load_dotenv, dotenv_values 
 import yaml
@@ -25,7 +26,7 @@ class AnsibleService:
         self.playbook_dir = playbook_dir
             
 
-    async def run_playbook(self, playbook_name: str, hosts: str | list[str], password: str = None, extra_vars: dict = None) -> tuple[int, str, str]:
+    async def run_playbook(self, playbook_name: str, hosts: str | list[str], password: str = None, extra_vars: dict = None) -> int:
         """Run an Ansible playbook asynchronously
 
         Args:
@@ -70,20 +71,15 @@ class AnsibleService:
         #env['ANSIBLE_SSH_ARGS'] = '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
         
         logger.debug(f"Executing command: {' '.join(cmd)}")
-        process = await asyncio.create_subprocess_exec(
+        process = subprocess.Popen(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env
         )
-
-        stdout, stderr = await process.communicate()
-
-        logger.debug(f"Playbook output: {stdout.decode() if stdout else stderr.decode()}")
+           
         return (
-            process.returncode,
-            stdout.decode() if stdout else "",
-            stderr.decode() if stderr else ""
+            process.pid
         )
     
     async def run_module(self, module_name: str, *args) -> tuple[int, str, str]:

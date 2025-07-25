@@ -709,7 +709,7 @@ class PlatformPageState(rx.State):
         try:
             response = await deploy_platform(working_platform.platform.config.instance_name, working_platform.password)
             working_platform.deployed = True
-            logger.debug(f"response: {response.json()}")
+            logger.debug(f"response: {response.get()} and {response.get()}")
             yield rx.toast.success("Deployed Successfully!")
         except Exception as e:
             logger.debug(f"there was an error deploying platform {working_platform.platform.config.instance_name}. e: {e}")
